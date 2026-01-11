@@ -1,0 +1,190 @@
+version: '3.8'
+
+services:
+  # =========================
+  # BASES DE DATOS
+  # =========================
+
+  postgres-cliente:
+    image: postgres:15-alpine
+    container_name: postgres-cliente
+    environment:
+      POSTGRES_DB: clientes_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-cliente-data:/var/lib/postgresql/data
+      - ./cliente-service/src/main/resources/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - financial-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-productos:
+    image: postgres:15-alpine
+    container_name: postgres-productos
+    environment:
+      POSTGRES_DB: productos_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-productos-data:/var/lib/postgresql/data
+      - ./productos-service/src/main/resources/db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - financial-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-keycloak:
+    image: postgres:15-alpine
+    container_name: postgres-keycloak
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+    volumes:
+      - postgres-keycloak-data:/var/lib/postgresql/data
+    networks:
+      - financial-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # =========================
+  # KEYCLOAK
+  # =========================
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0.1
+    container_name: keycloak
+    command: start-dev
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres-keycloak:5432/keycloak
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: postgres123
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8083:8080"
+    depends_on:
+      postgres-keycloak:
+        condition: service_healthy
+    networks:
+      - financial-network
+
+  # =========================
+  # MICROSERVICIOS
+  # =========================
+
+  cliente-service:
+    build:
+      context: ./cliente-service
+      dockerfile: Dockerfile
+    container_name: cliente-service
+    environment:
+      SERVER_PORT: 8081
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres-cliente
+      DB_PORT: 5432
+      DB_NAME: clientes_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres123
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres-cliente:
+        condition: service_healthy
+    networks:
+      - financial-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8081/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  productos-service:
+    build:
+      context: ./productos-service
+      dockerfile: Dockerfile
+    container_name: productos-service
+    environment:
+      SERVER_PORT: 8082
+      SPRING_PROFILES_ACTIVE: docker
+      DB_HOST: postgres-productos
+      DB_PORT: 5432
+      DB_NAME: productos_db
+      DB_USER: postgres
+      DB_PASSWORD: postgres123
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres-productos:
+        condition: service_healthy
+    networks:
+      - financial-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8082/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # =========================
+  # BFF
+  # =========================
+
+  bff-service:
+    build:
+      context: ./bff-service
+      dockerfile: Dockerfile
+    container_name: bff-service
+    environment:
+      SERVER_PORT: 8080
+      SPRING_PROFILES_ACTIVE: docker
+      CLIENTE_SERVICE_URL: http://cliente-service:8081
+      PRODUCTOS_SERVICE_URL: http://productos-service:8082
+      KEYCLOAK_ISSUER_URI: http://keycloak:8080/realms/financial-realm
+    ports:
+      - "8080:8080"
+    depends_on:
+      keycloak:
+        condition: service_started
+      cliente-service:
+        condition: service_healthy
+      productos-service:
+        condition: service_healthy
+    networks:
+      - financial-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+# =========================
+# NETWORK & VOLUMES
+# =========================
+
+networks:
+  financial-network:
+    driver: bridge
+
+volumes:
+  postgres-cliente-data:
+  postgres-productos-data:
+  postgres-keycloak-data:
